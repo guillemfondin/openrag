@@ -219,6 +219,55 @@ def fence_untrusted_text(text: str) -> str:
     return f"{UNTRUSTED_CHUNK_FENCE_START}\n{escaped}\n{UNTRUSTED_CHUNK_FENCE_END}"
 
 
+_OPENRAG_ENV_FILE = "/app/.env"
+
+
+def _read_openrag_env_value(key: str) -> str | None:
+    """Read a KEY="value" line from OpenRAG's mounted .env.
+
+    This component runs inside the Langflow container, which has no
+    `config` package (backend-only — see Dockerfile.langflow, it only copies
+    `custom_components/` and `flows/`), so `config.settings` isn't importable
+    here. Langflow's own Global Variable substitution (`load_from_db=True`
+    on the `password` input) is the intended path for this value, but it
+    does not resolve for flows invoked through `simple_run_flow` (verified:
+    same "OPENSEARCH_PASSWORD" is registered and visible via
+    `/api/v1/variables/`, yet `self.password` still comes back as the
+    unresolved literal in that path) — read the mounted .env directly
+    instead, the same file `OPENSEARCH_HOST`/`OPENSEARCH_URL`/etc. already
+    come from for this component's other settings.
+    """
+    try:
+        with open(_OPENRAG_ENV_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(f"{key}="):
+                    return line[len(key) + 1 :].strip().strip('"')
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_opensearch_username(raw_username: str | None) -> str:
+    """Resolve the OpenSearch username, working around a Langflow quirk.
+
+    When Langflow substitutes newer component code for a flow's stored
+    (outdated) node, some fields keep their flow-stored value (`auth_mode`,
+    which has `real_time_refresh=True`) while others silently reset to the
+    component's own class default instead (`username`, hardcoded "admin" —
+    confirmed via a temporary debug log: a flow explicitly stored as
+    "openrag" still ran with self.username == "admin"). "admin" is also a
+    reserved name several managed OpenSearch providers (e.g. Scaleway Cloud
+    Essentials) refuse at user-creation time, so it can never be the right
+    value for those deployments — fall back to the mounted .env's
+    OPENSEARCH_USERNAME whenever we see it.
+    """
+    user = (raw_username or "").strip()
+    if user and user != "admin":
+        return user
+    return _read_openrag_env_value("OPENSEARCH_USERNAME") or user
+
+
 @vector_store_connection
 class OpenSearchVectorStoreComponentMultimodalMultiEmbedding(LCVectorStoreComponent):
     """OpenSearch Vector Store Component with Multi-Model Hybrid Search Capabilities.
@@ -1241,9 +1290,24 @@ class OpenSearchVectorStoreComponentMultimodalMultiEmbedding(LCVectorStoreCompon
             header_value = f"Bearer {token}" if self.bearer_prefix else token
             return {"headers": {header_name: header_value}}
         if mode == "openrag":
-            # Writes are delegated to the OpenRAG backend ingest callback,
-            # so no direct OpenSearch credentials are needed. Only the
-            # OPENRAG_* fields are required for ingestion to function.
+            # Writes are delegated to the OpenRAG backend ingest callback
+            # (see _bulk_ingest_embeddings), so the OPENRAG_* fields below
+            # are all that path needs — it never touches build_client().
+            # But build_client()/build_vector_store() is also used directly
+            # for reads (search, mapping introspection) that don't go
+            # through that callback. Returning no credentials here assumes
+            # OpenSearch trusts this connection some other way (true on
+            # OpenRAG's own bundled OpenSearch image, e.g. the JWT/OIDC authc
+            # domain used elsewhere) — on a managed/SaaS OpenSearch (Basic
+            # Auth only, no such identity) every read call then fails with
+            # AuthenticationException(401). PATCH (local, not upstream):
+            # always fall back to Basic Auth for these reads — the write
+            # path above is untouched either way. (There is no clean way to
+            # gate this on a run-mode flag from inside the Langflow
+            # container: `config.settings`, which the equivalent backend-side
+            # fix in session_manager.py reads, isn't importable here — see
+            # Dockerfile.langflow, only `custom_components/`/`flows/` are
+            # copied in.)
             url = self._openrag_callback_value("openrag_ingest_url")
             token = self._openrag_callback_value("openrag_ingest_token")
             ingest_run_id = self._openrag_callback_value("openrag_ingest_run_id")
@@ -1262,13 +1326,15 @@ class OpenSearchVectorStoreComponentMultimodalMultiEmbedding(LCVectorStoreCompon
                     f"missing: {', '.join(missing)}."
                 )
                 raise ValueError(msg)
-            return {}
-        user = (self.username or "").strip()
+            read_user = _resolve_opensearch_username(self.username)
+            read_pwd = _read_openrag_env_value("OPENSEARCH_PASSWORD") or ""
+            if not read_user or not read_pwd:
+                return {}
+            return {"http_auth": (read_user, read_pwd)}
+        user = _resolve_opensearch_username(self.username)
         pwd = (self._openrag_input_to_str(self.password) or "").strip()
         if pwd == "OPENSEARCH_PASSWORD" or not pwd:
-            from config.settings import get_opensearch_password
-
-            pwd = get_opensearch_password() or ""
+            pwd = _read_openrag_env_value("OPENSEARCH_PASSWORD") or ""
         if not user or not pwd:
             msg = "Auth Mode is 'basic' but username/password are missing."
             raise ValueError(msg)
