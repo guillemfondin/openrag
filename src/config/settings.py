@@ -108,6 +108,35 @@ def get_opensearch_password() -> str | None:
     return os.getenv("OPENSEARCH_PASSWORD") or OPENSEARCH_PASSWORD
 
 
+# Per-user OpenSearch client auth. "jwt" (OpenRAG's default) signs a Bearer
+# token with this backend's own key and relies on OpenSearch's security
+# plugin having a matching OIDC authc domain that trusts this backend as
+# issuer (see cloud_securityconfig/config.yml's openid_auth_domain) — true
+# only when OpenSearch is OpenRAG's own bundled image/config. A managed/SaaS
+# OpenSearch (AWS OpenSearch Service, Aiven, Scaleway Cloud Essentials, ...)
+# only exposes Basic Auth, so every per-user JWT request there fails with
+# AuthenticationException(401) even though the shared Basic Auth credential
+# is valid. Set to "basic" to make per-user OpenSearch clients reuse the
+# shared Basic Auth credential instead of minting a JWT. Trade-off: this
+# bypasses OpenSearch's native Document-Level Security (DLS), which keys off
+# the per-user principal carried by the JWT (see dls_principal_service.py) —
+# every user then sees every document the shared credential can see. Only
+# set this where that's acceptable (e.g. no per-user/per-connector document
+# isolation requirement).
+_VALID_OPENSEARCH_USER_AUTH_MODES = ("jwt", "basic")
+_raw_opensearch_user_auth_mode = (
+    os.getenv("OPENRAG_OPENSEARCH_USER_AUTH_MODE", "jwt").strip().lower()
+)
+if _raw_opensearch_user_auth_mode not in _VALID_OPENSEARCH_USER_AUTH_MODES:
+    logger.warning(
+        "Invalid OPENRAG_OPENSEARCH_USER_AUTH_MODE value, falling back to 'jwt'",
+        value=_raw_opensearch_user_auth_mode,
+        valid_values=_VALID_OPENSEARCH_USER_AUTH_MODES,
+    )
+    _raw_opensearch_user_auth_mode = "jwt"
+OPENSEARCH_USER_AUTH_MODE = _raw_opensearch_user_auth_mode
+
+
 OPENRAG_FQDN = os.getenv("OPENRAG_FQDN")
 LANGFLOW_PORT = get_env_int("LANGFLOW_PORT", 7860)
 LANGFLOW_URL = os.getenv("LANGFLOW_URL", f"http://localhost:{LANGFLOW_PORT}")
