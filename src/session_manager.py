@@ -317,12 +317,30 @@ class SessionManager:
         else:
             user_id = user_or_id
 
+        from config.settings import (
+            OPENSEARCH_USER_AUTH_MODE,
+            clients,
+            get_opensearch_password,
+            get_opensearch_username,
+        )
+
+        # OPENRAG_OPENSEARCH_USER_AUTH_MODE=basic: this OpenSearch has no OIDC
+        # authc domain trusting our self-signed JWTs (managed/SaaS OpenSearch,
+        # not OpenRAG's own bundled image) — every per-user client must reuse
+        # the shared Basic Auth credential instead. Bypasses OpenSearch-native
+        # DLS (see the setting's docstring in config.settings).
+        if not IBM_AUTH_ENABLED and OPENSEARCH_USER_AUTH_MODE == "basic":
+            cache_key = "__shared_basic__"
+            if cache_key not in self.user_opensearch_clients:
+                self.user_opensearch_clients[cache_key] = clients.create_basic_opensearch_client(
+                    get_opensearch_username(), get_opensearch_password()
+                )
+            return self.user_opensearch_clients[cache_key]
+
         provided_jwt_token = jwt_token
 
         # Get the effective JWT token (handles anonymous JWT creation)
         jwt_token = self.get_effective_jwt_token(user_id, jwt_token)
-
-        from config.settings import clients
 
         # Upstream credentials may rotate per request.
         if IBM_AUTH_ENABLED:
