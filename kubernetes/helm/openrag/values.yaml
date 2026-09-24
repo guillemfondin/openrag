@@ -396,6 +396,15 @@ backend:
   # separately with IBM's own instana-agent chart or operator. This chart never
   # deploys an agent: the agent needs a privileged, host-PID DaemonSet, which is
   # a cluster-admin concern, not an application one.
+  # Overrides the built-in provider catalog (src/config/model_providers.yaml)
+  # with a custom one — e.g. to add a `hosted_vllm` entry for a specific
+  # provider (Scaleway, a private vLLM deployment, ...) with its own curated
+  # model list. Mounted at /app/config/model_providers.yaml and pointed to via
+  # OPENRAG_MODEL_PROVIDERS_CONFIG when enabled; ignored otherwise.
+  modelProvidersConfig:
+    enabled: false
+    content: ""
+
   instana:
     enabled: false
     # Agent address. Leave empty to use the pod's own node IP via the Downward

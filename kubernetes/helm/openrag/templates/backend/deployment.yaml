@@ -229,14 +229,18 @@ spec:
               containerPort: {{ .Values.backend.ingestRouter.port }}
               protocol: TCP
             {{- end }}
-          {{- if .Values.backend.instana.enabled }}
+          {{- if or .Values.backend.instana.enabled .Values.backend.modelProvidersConfig.enabled }}
           # The backend otherwise takes its whole configuration from the mounted
-          # .env file. Instana is the one exception: its agent runs as a
-          # per-node DaemonSet behind a hostPort, so the address is the pod's
-          # own node IP — a value that does not exist when the .env Secret is
-          # rendered. bootstrap.py loads .env with override=False, so this
-          # container env var takes precedence.
+          # .env file. These are the exceptions:
+          # - Instana: its agent runs as a per-node DaemonSet behind a hostPort,
+          #   so the address is the pod's own node IP — a value that does not
+          #   exist when the .env Secret is rendered.
+          # - OPENRAG_MODEL_PROVIDERS_CONFIG: points at the file mounted from
+          #   the model-providers-config volume below.
+          # bootstrap.py loads .env with override=False, so these container env
+          # vars take precedence.
           env:
+            {{- if .Values.backend.instana.enabled }}
             - name: INSTANA_AGENT_HOST
               {{- if .Values.backend.instana.agentHost }}
               value: {{ .Values.backend.instana.agentHost | quote }}
@@ -245,6 +249,11 @@ spec:
                 fieldRef:
                   fieldPath: status.hostIP
               {{- end }}
+            {{- end }}
+            {{- if .Values.backend.modelProvidersConfig.enabled }}
+            - name: OPENRAG_MODEL_PROVIDERS_CONFIG
+              value: /app/config/model_providers.yaml
+            {{- end }}
           {{- end }}
           volumeMounts:
             - name: openrag-dotenv
@@ -258,6 +267,12 @@ spec:
             {{- if .Values.backend.persistence.shared.enabled }}
             - name: shared
               mountPath: {{ .Values.backend.persistence.shared.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.backend.modelProvidersConfig.enabled }}
+            - name: model-providers-config
+              mountPath: /app/config/model_providers.yaml
+              subPath: model_providers.yaml
               readOnly: true
             {{- end }}
           resources:
@@ -315,6 +330,11 @@ spec:
         - name: shared
           persistentVolumeClaim:
             claimName: {{ include "openrag.fullname" . }}-shared
+        {{- end }}
+        {{- if .Values.backend.modelProvidersConfig.enabled }}
+        - name: model-providers-config
+          configMap:
+            name: {{ include "openrag.fullname" . }}-model-providers
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
