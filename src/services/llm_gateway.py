@@ -521,19 +521,56 @@ def _normalise_tool_arguments(value: Any) -> tuple[Any, bool]:
     return value, False
 
 
+#: OpenAI-compatible servers (seen: hosted_vllm serving Mistral) reject any
+#: `function.name` outside this shape, including one already stored in
+#: message history from a prior turn.
+_VALID_FUNCTION_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _has_valid_function_name(function: Mapping[str, Any]) -> bool:
+    name = function.get("name")
+    return isinstance(name, str) and bool(_VALID_FUNCTION_NAME.fullmatch(name))
+
+
 def _repair_tool_calls(tool_calls: Any, provider: str, model: str) -> int:
-    """Normalise `arguments` on every tool call in place. Returns how many changed."""
+    """Normalise `arguments` on every tool call in place. Returns how many changed.
+
+    Also drops any tool call whose `function.name` is not a legal OpenAI
+    function name. Some providers occasionally misroute assistant prose or a
+    multi-citation marker through the tool-call channel instead of `content`
+    (observed on hosted_vllm/Mistral, where the "name" ends up being a whole
+    sentence, or several `(Source: ...)` ids joined by a comma). Forwarding
+    that as a tool call gets it stored in conversation history, and the same
+    provider then rejects every following turn with "Function name was
+    <text> but must be a-z, A-Z, 0-9 ... max 64" — permanently breaking that
+    conversation. Dropping it here loses that one malformed call instead.
+    """
+    if not isinstance(tool_calls, list):
+        return 0
     repaired = 0
-    for call in tool_calls or []:
-        if not isinstance(call, dict):
-            continue
-        function = call.get("function")
+    invalid_names: list[str] = []
+    kept: list[Any] = []
+    for call in tool_calls:
+        function = call.get("function") if isinstance(call, dict) else None
         if not isinstance(function, dict):
+            kept.append(call)
+            continue
+        if not _has_valid_function_name(function):
+            invalid_names.append(str(function.get("name"))[:80])
             continue
         arguments, changed = _normalise_tool_arguments(function.get("arguments"))
         if changed:
             function["arguments"] = arguments
             repaired += 1
+        kept.append(call)
+    tool_calls[:] = kept
+    if invalid_names:
+        logger.warning(
+            "Dropped tool call(s) with an invalid function name",
+            provider=provider,
+            model=model,
+            invalid_names=invalid_names,
+        )
     if repaired:
         logger.warning(
             "Repaired double-encoded tool call arguments",

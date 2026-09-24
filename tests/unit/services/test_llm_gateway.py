@@ -491,7 +491,20 @@ async def test_stream_sse_counts_tool_calls_as_usable_output(monkeypatch):
 
     async def gen():
         yield {
-            "choices": [{"delta": {"tool_calls": [{"index": 0}]}, "finish_reason": "tool_calls"}]
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "type": "function",
+                                "function": {"name": "t", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
         }
 
     [line async for line in llm_gateway._stream_sse(gen(), "openai", "gpt-4o-mini")]
@@ -933,6 +946,93 @@ async def test_stream_sse_logs_the_repair(monkeypatch):
     _level, _event, fields = next(call for call in warnings if "Repaired" in call[1])
     assert fields["model"] == "watsonx/ibm/granite-4-h-small"
     assert fields["tool_calls"] == 1
+
+
+# --------------------------------------------------------------------------
+# hosted_vllm/Mistral: assistant prose misrouted through the tool-call
+# channel, with a `function.name` that isn't a legal OpenAI name. Forwarding
+# it gets stored in history and then rejected by the provider on every
+# following turn ("Function name was <text> but must be a-z, A-Z, 0-9 ...
+# max 64"), permanently breaking that conversation.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_sse_drops_a_tool_call_whose_name_is_assistant_prose(monkeypatch):
+    from services import llm_gateway
+
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(llm_gateway, "logger", recorder)
+
+    bogus_name = "En l'absence de données (Source: 34205a7b_QzRBTdikADCxQEkjFnFS3M0U_1_36)."
+
+    async def gen():
+        for chunk in _tool_call_deltas([], name=bogus_name):
+            yield chunk
+
+    lines = [
+        line
+        async for line in llm_gateway._stream_sse(
+            gen(), "hosted_vllm", "hosted_vllm/mistral-medium-3.5-128b"
+        )
+    ]
+
+    assert _streamed_tool_calls(lines) == []
+    warnings = [call for call in recorder.calls if call[0] == "warning"]
+    _level, event, fields = next(c for c in warnings if "invalid function name" in c[1])
+    assert fields["invalid_names"] == [bogus_name]
+
+
+@pytest.mark.asyncio
+async def test_stream_sse_drops_a_tool_call_name_made_of_joined_citations(monkeypatch):
+    """The multi-citation symptom: several `(Source: id)` markers joined by commas."""
+    from services import llm_gateway
+
+    joined = (
+        "f5e64b655d2c0420c7c05bd6_StuzuhDUsFjqD7iOJ2zhuiz8_1_46,"
+        "34205a7b53905e31b7aa6809_7x-yTFs8Q9WOROmO6DkCtioy_1_50,"
+        "34205a7b53905e31b7aa6809_StuzuhDUsFjqD7iOJ2zhuiz8_1_51"
+    )
+
+    async def gen():
+        for chunk in _tool_call_deltas([], name=joined):
+            yield chunk
+
+    lines = [
+        line
+        async for line in llm_gateway._stream_sse(
+            gen(), "hosted_vllm", "hosted_vllm/mistral-medium-3.5-128b"
+        )
+    ]
+
+    # Commas are outside [A-Za-z0-9_-], so even this id-shaped name is invalid.
+    assert _streamed_tool_calls(lines) == []
+
+
+def test_chat_completions_drops_an_invalid_tool_name_instead_of_forwarding_it():
+    from services.llm_gateway import _repair_completion_payload
+
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "not a real name", "arguments": "{}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    _repair_completion_payload(payload, "hosted_vllm", "hosted_vllm/mistral-medium-3.5-128b")
+
+    assert payload["choices"][0]["message"]["tool_calls"] == []
 
 
 # --------------------------------------------------------------------------
