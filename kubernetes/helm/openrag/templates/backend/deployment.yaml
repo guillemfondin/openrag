@@ -25,6 +25,9 @@ spec:
         checksum/secret-backend: {{ include (print $.Template.BasePath "/secrets/backend-secret.yaml") . | sha256sum }}
         checksum/secret-dotenv: {{ include (print $.Template.BasePath "/backend/backend-dotenv.yaml") . | sha256sum }}
     spec:
+      # See frontend/deployment.yaml: avoid the same docker-links env var
+      # collision for this pod too.
+      enableServiceLinks: false
       serviceAccountName: {{ include "openrag.serviceAccountName" . }}
       {{- with .Values.podSecurityContext }}
       securityContext:

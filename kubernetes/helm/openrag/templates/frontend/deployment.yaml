@@ -22,6 +22,12 @@ spec:
         prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
+      # Kubernetes auto-injects docker-links-style env vars for every Service
+      # in this namespace (e.g. OPENRAG_BACKEND_PORT=tcp://<ip>:8000). That
+      # collides with this pod's own OPENRAG_BACKEND_HOST/PORT convention
+      # (same prefix as the "openrag-backend" Service) and breaks the
+      # frontend's internal API proxy target ("Failed to proxy request").
+      enableServiceLinks: false
       serviceAccountName: {{ include "openrag.serviceAccountName" . }}
       {{- with .Values.podSecurityContext }}
       securityContext:
