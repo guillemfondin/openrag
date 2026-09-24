@@ -28,6 +28,15 @@ global:
     username: "admin"                     # OpenSearch username
     password: ""                          # OpenSearch password (stored in secret)
     indexName: "documents"                # OpenSearch index name
+    # Startup readiness check (src/utils/opensearch_utils.py:wait_for_opensearch):
+    # the backend blocks its own startup until the cluster reports at least this
+    # many reachable nodes of each kind, then fails startup if it never does.
+    # Defaults match a 3-node cluster where every node holds every role. Set
+    # expectedCoordinatingNodes to 0 for a cluster with no dedicated
+    # coordinating-only nodes (the common case for small/managed clusters).
+    expectedDataNodes: 3
+    expectedClusterManagers: 3
+    expectedCoordinatingNodes: 3
 
   docling:
     host: docling-serve.docling.svc.cluster.local

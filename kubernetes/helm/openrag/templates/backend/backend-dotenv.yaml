@@ -85,6 +85,9 @@ stringData:
     {{- end }}
     LANGFLOW_OPENSEARCH_HOST={{ include "openrag.langflow.opensearch.host" . | quote }}
     LANGFLOW_OPENSEARCH_PORT={{ include "openrag.langflow.opensearch.port" . | quote }}
+    OPENSEARCH_EXPECTED_DATA_NODE_COUNT={{ .Values.global.opensearch.expectedDataNodes | quote }}
+    OPENSEARCH_EXPECTED_CLUSTER_MANAGER_COUNT={{ .Values.global.opensearch.expectedClusterManagers | quote }}
+    OPENSEARCH_EXPECTED_COORDINATING_NODE_COUNT={{ .Values.global.opensearch.expectedCoordinatingNodes | quote }}
 
 
     # Google OAuth
